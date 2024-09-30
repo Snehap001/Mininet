@@ -8,7 +8,8 @@ from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
 from ryu.lib import hub  # Import hub for threading
-from ryu.topology.api import get_switch, get_link  # Import topology API
+from ryu.topology.api import get_switch, get_link,get_host  # Import topology API
+from ryu.lib.packet import icmp
 import heapq
 class SimpleSwitch(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_0.OFP_VERSION]
@@ -16,92 +17,88 @@ class SimpleSwitch(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(SimpleSwitch, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
-        self.links = []  # List to store links
+        self.links ={}  
         self.spanning_tree_ports = {}
-        # Start a separate thread to monitor topology changes
+        self.host_links={}
         hub.spawn(self.monitor_topology)
     def monitor_topology(self):
-        while True:
+        while len(self.links)==0:
             self.links = self.get_links()
-              # Adjust the interval as needed
+            hub.sleep(5)
     def get_links(self):
         # Retrieve the current topology state
-        links = []
-        switch_list = get_switch(self)
-        for switch in switch_list:
-            for port in switch.ports:
-                # Only consider links where the port is connected
-                links.append((switch.dp.id, port.port_no))
+        link_list = get_link(self, None)
+        links={}
+        for link in link_list:
+            src = link.src
+            dst = link.dst
+            if (src.dpid,dst.dpid) not in links and  (dst.dpid,src.dpid) not in links:
+                links[(src.dpid,dst.dpid)]=(src.port_no,dst.port_no)
+        host_list = get_host(self, None)
+        host_links = {}
+        for host in host_list:
+            # Each host object has port information about the switch it is connected to
+            host_mac = host.mac
+            host_ip = host.ipv4 if host.ipv4 else host.ipv6
+            switch_dpid = host.port.dpid
+            switch_port_no = host.port.port_no
+
+            # Store the host-switch link
+            host_links[switch_dpid] = {
+                'host': host_mac,
+                'switch_port': switch_port_no
+            }
+        self.host_links=host_links
+        
         return links
 
-    # Implement get_neighbors based on the links stored
-    def get_neighbors(self, dpid):
-        neighbor_list=[]
-        for node,neighbor in self.links:
-            if node==dpid and neighbor !=dpid and neighbor not in neighbor_list:
-                neighbor_list.append(neighbor)
-            # elif neighbor==dpid and node !=dpid and node not in neighbor_list:
-            #     neighbor_list.append(node)
+    def get_neighbors(self):
+        neighbor_list={}
+        for (s1, s2), (p1, p2) in self.links.items():
+            if s1 not in neighbor_list:
+                neighbor_list[s1]=[]
+            if s2 not in neighbor_list:
+                neighbor_list[s2]=[]
+            if  s2 not in neighbor_list[s1]:
+                neighbor_list[s1].append(s2)
+            if s1 not in neighbor_list[s2]:
+                neighbor_list[s2].append(s1)
         return neighbor_list
         
 
     
 
     def construct_spanning_tree(self):
-        # Use Prim's algorithm to create a spanning tree
-        links = self.get_links() # Implement this method to get current links
-        # self.logger.info(links)
-        
-        # Initialize spanning tree
-        self.spanning_tree_ports = {}
-
-        # Assuming you have a way to get the switches (dpids)
-        for dpid in self.mac_to_port.keys():
-            self.spanning_tree_ports[dpid] = []
-
-        # Start Prim's algorithm
-        if not self.mac_to_port:
+        links=self.links
+        self.spanning_tree_ports={}
+        if len(links)==0:
             return
-        visited = set()
-        start_node = list(self.mac_to_port.keys())[0]
-        min_heap=[(0, start_node,None)]
-    
-        while len(visited) !=len(list(self.mac_to_port.keys())):
-            visited.add(start_node)
-            if(min_heap):
-                cost, node,parent= heapq.heappop(min_heap)
-                # self.logger.info(f"node {node}")
-                
-                added=False
-                for n in self.get_neighbors(node):
-                    if n not in visited:
-                        # self.logger.info(f"neighbor {n}")
-                        added=True
-                        visited.add(n)
-                        if n not in self.spanning_tree_ports[node]:
-                            self.spanning_tree_ports[node].append(n)
-                        if node not in self.spanning_tree_ports[n]:
-                            self.spanning_tree_ports[n].append(node)
-                        heapq.heappush(min_heap, (1, n,node))
-                        
-                            
-                if not added and len(self.get_neighbors(node))!=0 and cost==0:
-                    n=self.get_neighbors(node)[0]
-                    if n not in self.spanning_tree_ports[node]:
-                        self.spanning_tree_ports[node].append(n)
-                    if node not in self.spanning_tree_ports[n]:
-                        self.spanning_tree_ports[n].append(node)
+        switches=set()
+        for (s1, s2), (p1, p2) in links.items():
+            self.spanning_tree_ports[s1]=[]
+            self.spanning_tree_ports[s2]=[]
+            switches.add(s1)
+            switches.add(s2)
 
-            else:
-                for start_node in list(self.mac_to_port.keys()):
-                    if start_node not in visited:
-                        min_heap=[(0, start_node,None)]
-                        
-                        break
-
-
+        neighbors=self.get_neighbors()
+        (sw1,sw2),(p1,p2)=next(iter(links.items()))
+        minheap=[(0,sw1,None)]
+        visited=set()
         
-        self.logger.info("Spanning tree constructed: %s", self.spanning_tree_ports)
+        while len(visited)!=len(switches):
+            cost,current,parent=heapq.heappop(minheap)
+            if parent!=None:
+                if current not in self.spanning_tree_ports[parent]:
+                    self.spanning_tree_ports[parent].append(current)
+                if parent not in self.spanning_tree_ports[current]:
+                    self.spanning_tree_ports[current].append(parent)
+            if current in visited:
+                continue
+            visited.add(current)
+            for adj in neighbors[current]:
+                if adj not in visited:
+                    heapq.heappush(minheap,(cost+1,adj,current))
+        
 
 
     def add_flow(self, datapath, in_port, dst, src, actions):
@@ -120,6 +117,12 @@ class SimpleSwitch(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
+        if len(self.spanning_tree_ports)==0:
+            
+            return
+        # self.logger.info(f"spanning tree is : {self.spanning_tree_ports}")
+        # self.logger.info(f"links: {self.links}")
+        # self.logger.info(f"host links: {self.host_links} ")
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
@@ -131,30 +134,69 @@ class SimpleSwitch(app_manager.RyuApp):
             return
         dst = eth.dst
         src = eth.src
-
         dpid = datapath.id
         self.mac_to_port.setdefault(dpid, {})
-        
-
-        # self.logger.info("packet in %s %s %s %s", dpid, src, dst, msg.in_port)
-
         self.mac_to_port[dpid][src] = msg.in_port
+        self.logger.info(f"packet from {src} to {dst} at {dpid}")
+        
+        if dst=='ff:ff:ff:ff:ff:ff' or dst=='33:33:00:00:00:02':
+            actions=[]
+            neighbor_switches=self.spanning_tree_ports[dpid]
+            selected_ports=[]
+            for sw in neighbor_switches:
+                if (dpid,sw) in self.links:
+                    p1,p2=self.links[(dpid,sw)]
+                else:
+                    p2,p1=self.links[(sw,dpid)]
+                if p1!=msg.in_port and p1 not in selected_ports:
+                    selected_ports.append(p1)
+            
+            if dpid in self.host_links:
+                host_mac,switch_port = self.host_links[dpid]['host'],self.host_links[dpid]['switch_port']
+                if host_mac!=src and switch_port!=-msg.in_port and switch_port not in selected_ports:
+                    selected_ports.append(switch_port)
 
-        # Check if the dst is in the spanning tree
-        out_port = ofproto.OFPP_FLOOD  # Default action is to flood
-        # if dst in self.mac_to_port[dpid]:
-        #     out_port = self.mac_to_port[dpid][dst]
+            self.logger.info(f"ports of {dpid} are : {selected_ports}")
+            for port in selected_ports:
+                actions.append(datapath.ofproto_parser.OFPActionOutput(port))
+            data = msg.data if msg.buffer_id == ofproto.OFP_NO_BUFFER else None
+            out = datapath.ofproto_parser.OFPPacketOut(
+                datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.in_port,
+                actions=actions, data=data)
 
-        # Check if out_port is part of the spanning tree
-        if out_port not in self.spanning_tree_ports.get(dpid, []):
-            out_port = ofproto.OFPP_FLOOD  # Block if not part of the spanning tree
-        # self.logger.info(f"Out port for packet: {out_port}, dst: {dst}, src: {src}")
-        actions = [datapath.ofproto_parser.OFPActionOutput(out_port)]
+            datapath.send_msg(out)
 
-        # Install a flow to avoid packet_in next time
-        if out_port != ofproto.OFPP_FLOOD:
-            self.add_flow(datapath, msg.in_port, dst, src, actions)
+            return
 
+
+
+        if dst in self.mac_to_port[dpid]:
+            out_port=self.mac_to_port[dpid][dst]
+            actions = [datapath.ofproto_parser.OFPActionOutput(out_port)]
+            self.logger.info(f"out port: {out_port}")
+
+        else:
+            actions=[]
+            neighbor_switches=self.spanning_tree_ports[dpid]
+            selected_ports=[]
+            for sw in neighbor_switches:
+                if (dpid,sw) in self.links:
+                    p1,p2=self.links[(dpid,sw)]
+                else:
+                    p2,p1=self.links[(sw,dpid)]
+                if p1!=msg.in_port:
+                    selected_ports.append(p1)
+            if dpid in self.host_links:
+                host_mac,switch_port = self.host_links[dpid]['host'],self.host_links[dpid]['switch_port']
+                if host_mac!=src and switch_port!=-msg.in_port and switch_port not in selected_ports:
+                    selected_ports.append(switch_port)
+            self.logger.info(f"ports of {dpid} are : {selected_ports}")
+            for port in selected_ports:
+                actions.append(datapath.ofproto_parser.OFPActionOutput(port))
+
+            out_port=-1
+            
+        
         data = None
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
             data = msg.data
@@ -162,7 +204,12 @@ class SimpleSwitch(app_manager.RyuApp):
         out = datapath.ofproto_parser.OFPPacketOut(
             datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.in_port,
             actions=actions, data=data)
+        if out_port != -1:
+            self.add_flow(datapath, msg.in_port, dst, src, actions)
+
         datapath.send_msg(out)
+
+       
 
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
@@ -171,5 +218,21 @@ class SimpleSwitch(app_manager.RyuApp):
         reason = msg.reason
         port_no = msg.desc.port_no
 
-        if reason in [msg.datapath.ofproto.OFPPR_ADD, msg.datapath.ofproto.OFPPR_DELETE]:
-            self.construct_spanning_tree()  # Reconstruct the spanning tree
+        msg = ev.msg
+        reason = msg.reason
+        port_no = msg.desc.port_no
+
+        ofproto = msg.datapath.ofproto
+        if reason == ofproto.OFPPR_ADD:
+            self.logger.info("port added %s", port_no)
+        elif reason == ofproto.OFPPR_DELETE:
+            self.logger.info("port deleted %s", port_no)
+        elif reason == ofproto.OFPPR_MODIFY:
+            self.logger.info("port modified %s", port_no)
+        else:
+            self.logger.info("Illeagal port state %s %s", port_no, reason)
+        
+        hub.sleep(1)
+        self.construct_spanning_tree()
+
+        
