@@ -44,10 +44,9 @@ class SimpleSwitch(app_manager.RyuApp):
             switch_port_no = host.port.port_no
 
             # Store the host-switch link
-            host_links[switch_dpid] = {
-                'host': host_mac,
-                'switch_port': switch_port_no
-            }
+            if switch_dpid not in host_links:
+                host_links[switch_dpid]=[]
+            host_links[switch_dpid].append((host_mac,switch_port_no))
         self.host_links=host_links
         
         return links
@@ -152,9 +151,10 @@ class SimpleSwitch(app_manager.RyuApp):
                     selected_ports.append(p1)
             
             if dpid in self.host_links:
-                host_mac,switch_port = self.host_links[dpid]['host'],self.host_links[dpid]['switch_port']
-                if host_mac!=src and switch_port!=-msg.in_port and switch_port not in selected_ports:
-                    selected_ports.append(switch_port)
+                for host_mac,switch_port in self.host_links[dpid]:
+                
+                    if host_mac!=src and switch_port!=msg.in_port and switch_port not in selected_ports:
+                        selected_ports.append(switch_port)
 
             self.logger.info(f"ports of {dpid} are : {selected_ports}")
             for port in selected_ports:
@@ -187,9 +187,10 @@ class SimpleSwitch(app_manager.RyuApp):
                 if p1!=msg.in_port:
                     selected_ports.append(p1)
             if dpid in self.host_links:
-                host_mac,switch_port = self.host_links[dpid]['host'],self.host_links[dpid]['switch_port']
-                if host_mac!=src and switch_port!=-msg.in_port and switch_port not in selected_ports:
-                    selected_ports.append(switch_port)
+                for host_mac,switch_port in self.host_links[dpid]:
+                
+                    if host_mac!=src and switch_port!=msg.in_port and switch_port not in selected_ports:
+                        selected_ports.append(switch_port)
             self.logger.info(f"ports of {dpid} are : {selected_ports}")
             for port in selected_ports:
                 actions.append(datapath.ofproto_parser.OFPActionOutput(port))
