@@ -83,13 +83,15 @@ class SimpleSwitch(app_manager.RyuApp):
         
         while len(visited)!=len(switches):
             cost,current,parent=heapq.heappop(minheap)
+           
+            if current in visited:
+                continue
             if parent!=None:
                 if current not in self.spanning_tree_ports[parent]:
                     self.spanning_tree_ports[parent].append(current)
                 if parent not in self.spanning_tree_ports[current]:
                     self.spanning_tree_ports[current].append(parent)
-            if current in visited:
-                continue
+            
             visited.add(current)
             for adj in neighbors[current]:
                 if adj not in visited:
@@ -174,8 +176,8 @@ class SimpleSwitch(app_manager.RyuApp):
         if len(self.spanning_tree_ports)==0:
             
             return
-        # self.logger.info(f"spanning tree is : {self.spanning_tree_ports}")
-        # self.logger.info(f"links: {self.links}")
+        self.logger.info(f"spanning tree is : {self.spanning_tree_ports}")
+        self.logger.info(f"links: {self.links}")
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
