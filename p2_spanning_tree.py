@@ -64,9 +64,6 @@ class SimpleSwitch(app_manager.RyuApp):
                 neighbor_list[s2].append(s1)
         return neighbor_list
         
-
-    
-
     def construct_spanning_tree(self):
         links=self.links
         self.spanning_tree_ports={}
@@ -98,8 +95,6 @@ class SimpleSwitch(app_manager.RyuApp):
                 if adj not in visited:
                     heapq.heappush(minheap,(cost+1,adj,current))
         
-
-
     def add_flow(self, datapath, in_port, dst, src, actions):
         ofproto = datapath.ofproto
 
@@ -113,7 +108,67 @@ class SimpleSwitch(app_manager.RyuApp):
             priority=ofproto.OFP_DEFAULT_PRIORITY,
             flags=ofproto.OFPFF_SEND_FLOW_REM, actions=actions)
         datapath.send_msg(mod)
+    def broadcast_packet_handler(self,ev):
+        msg = ev.msg
+        datapath = msg.datapath
+        ofproto = datapath.ofproto
+        pkt = packet.Packet(msg.data)
+        eth = pkt.get_protocol(ethernet.ethernet)
+        src = eth.src
+        dpid = datapath.id
 
+        actions=[]
+        neighbor_switches=self.spanning_tree_ports[dpid]
+        selected_ports=[]
+        for sw in neighbor_switches:
+            if (dpid,sw) in self.links:
+                p1,p2=self.links[(dpid,sw)]
+            else:
+                p2,p1=self.links[(sw,dpid)]
+            if p1!=msg.in_port and p1 not in selected_ports:
+                selected_ports.append(p1)
+        
+        if dpid in self.host_links:
+            for host_mac,switch_port in self.host_links[dpid]:
+            
+                if host_mac!=src and switch_port!=msg.in_port and switch_port not in selected_ports:
+                    selected_ports.append(switch_port)
+
+        for port in selected_ports:
+            actions.append(datapath.ofproto_parser.OFPActionOutput(port))
+        data = msg.data if msg.buffer_id == ofproto.OFP_NO_BUFFER else None
+        out = datapath.ofproto_parser.OFPPacketOut(
+            datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.in_port,
+            actions=actions, data=data)
+
+        datapath.send_msg(out)
+
+    def unicast_handler(self,ev):
+        msg = ev.msg
+        datapath = msg.datapath
+        ofproto = datapath.ofproto
+        pkt = packet.Packet(msg.data)
+        eth = pkt.get_protocol(ethernet.ethernet)
+        src = eth.src
+        dpid = datapath.id
+        actions=[]
+        neighbor_switches=self.spanning_tree_ports[dpid]
+        selected_ports=[]
+        for sw in neighbor_switches:
+            if (dpid,sw) in self.links:
+                p1,p2=self.links[(dpid,sw)]
+            else:
+                p2,p1=self.links[(sw,dpid)]
+            if p1!=msg.in_port:
+                selected_ports.append(p1)
+        if dpid in self.host_links:
+            for host_mac,switch_port in self.host_links[dpid]:
+            
+                if host_mac!=src and switch_port!=msg.in_port and switch_port not in selected_ports:
+                    selected_ports.append(switch_port)
+        for port in selected_ports:
+            actions.append(datapath.ofproto_parser.OFPActionOutput(port))
+        return actions
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         if len(self.spanning_tree_ports)==0:
@@ -121,7 +176,6 @@ class SimpleSwitch(app_manager.RyuApp):
             return
         # self.logger.info(f"spanning tree is : {self.spanning_tree_ports}")
         # self.logger.info(f"links: {self.links}")
-        # self.logger.info(f"host links: {self.host_links} ")
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
@@ -139,62 +193,15 @@ class SimpleSwitch(app_manager.RyuApp):
         self.logger.info(f"packet from {src} to {dst} at {dpid}")
         
         if dst=='ff:ff:ff:ff:ff:ff' or dst=='33:33:00:00:00:02':
-            actions=[]
-            neighbor_switches=self.spanning_tree_ports[dpid]
-            selected_ports=[]
-            for sw in neighbor_switches:
-                if (dpid,sw) in self.links:
-                    p1,p2=self.links[(dpid,sw)]
-                else:
-                    p2,p1=self.links[(sw,dpid)]
-                if p1!=msg.in_port and p1 not in selected_ports:
-                    selected_ports.append(p1)
-            
-            if dpid in self.host_links:
-                for host_mac,switch_port in self.host_links[dpid]:
-                
-                    if host_mac!=src and switch_port!=msg.in_port and switch_port not in selected_ports:
-                        selected_ports.append(switch_port)
-
-            self.logger.info(f"ports of {dpid} are : {selected_ports}")
-            for port in selected_ports:
-                actions.append(datapath.ofproto_parser.OFPActionOutput(port))
-            data = msg.data if msg.buffer_id == ofproto.OFP_NO_BUFFER else None
-            out = datapath.ofproto_parser.OFPPacketOut(
-                datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.in_port,
-                actions=actions, data=data)
-
-            datapath.send_msg(out)
-
+            self.broadcast_packet_handler(ev)
             return
-
-
 
         if dst in self.mac_to_port[dpid]:
             out_port=self.mac_to_port[dpid][dst]
             actions = [datapath.ofproto_parser.OFPActionOutput(out_port)]
-            self.logger.info(f"out port: {out_port}")
 
         else:
-            actions=[]
-            neighbor_switches=self.spanning_tree_ports[dpid]
-            selected_ports=[]
-            for sw in neighbor_switches:
-                if (dpid,sw) in self.links:
-                    p1,p2=self.links[(dpid,sw)]
-                else:
-                    p2,p1=self.links[(sw,dpid)]
-                if p1!=msg.in_port:
-                    selected_ports.append(p1)
-            if dpid in self.host_links:
-                for host_mac,switch_port in self.host_links[dpid]:
-                
-                    if host_mac!=src and switch_port!=msg.in_port and switch_port not in selected_ports:
-                        selected_ports.append(switch_port)
-            self.logger.info(f"ports of {dpid} are : {selected_ports}")
-            for port in selected_ports:
-                actions.append(datapath.ofproto_parser.OFPActionOutput(port))
-
+            actions=self.unicast_handler(ev)
             out_port=-1
             
         
@@ -211,8 +218,6 @@ class SimpleSwitch(app_manager.RyuApp):
         datapath.send_msg(out)
 
        
-
-
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def _port_status_handler(self, ev):
         msg = ev.msg
