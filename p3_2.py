@@ -79,18 +79,34 @@ class SimpleSwitch(app_manager.RyuApp):
         )
         self.sent_timestamps[(src_mac,dst_mac)]=time.time()
         datapath.send_msg(out)
-    def set_min_links(self):      
+    def set_min_links(self):
+        # undirected_link_delays={}
+        # for (sw1,sw2) in self.links:
+        #     for (p1,p2) in self.links[(sw1,sw2)]:
+        #         mac1=self.datapaths[(sw1,p1)]
+        #         mac2=self.datapaths[(sw2,p2)]
+        #         delay=0
+        #         count=0
+        #         if((mac1,mac2) in self.link_delays):
+        #             delay+=self.link_delays[(mac1,mac2)]
+        #             count+=1
+        #         if((mac2,mac1) in self.link_delays):
+        #             delay+=self.link_delays[(mac2,mac1)]
+        #             count+=1
+        #         if(count==0):
+        #             undirected_link_delays[(mac1,mac2)]=float('inf')
+        #             continue
+        #         delay=(delay/count)
+        #         undirected_link_delays[(mac1,mac2)]=delay
         for (sw1,sw2) in self.links:
             all_links=self.links[(sw1,sw2)]
             min_del_link = min(all_links, key=lambda link: self.link_delays[(self.datapaths[sw1].ports[link[0]].hw_addr,self.datapaths[sw2].ports[link[1]].hw_addr)])
             if sw1 in self.adj_lists:
-                self.adj_lists[sw1].append((sw2,min_del_link))
+                delay=self.link_delays[(self.datapaths[sw1].ports[min_del_link[0]].hw_addr,self.datapaths[sw2].ports[min_del_link[1]].hw_addr)]
+                self.adj_lists[sw1].append((sw2,delay))
             else:
-                self.adj_lists[sw1]=[(sw2,min_del_link)]
-            if sw2 in self.adj_lists:
-                self.adj_lists[sw2].append((sw1,min_del_link))
-            else:
-                self.adj_lists[sw2]=[(sw1,min_del_link)]
+                delay=self.link_delays[(self.datapaths[sw1].ports[min_del_link[0]].hw_addr,self.datapaths[sw2].ports[min_del_link[1]].hw_addr)]
+                self.adj_lists[sw1]=[(sw2,delay)]
     def run_floyd_warshall(self):
         self.set_min_links()
         switch_list=list(self.adj_lists.keys())
@@ -98,8 +114,8 @@ class SimpleSwitch(app_manager.RyuApp):
         path = {switch: {other: [] for other in switch_list} for switch in switch_list}
         for switch in switch_list:
             dist[switch][switch] = 0
-            path[switch][switch]= switch
-            for neighbor, weight in self.adj_lists[switch]:
+            path[switch][switch]= [switch]
+            for (neighbor, weight) in self.adj_lists[switch]:
                 dist[switch][neighbor] = weight
                 path[switch][neighbor] = [switch,neighbor]
         for sw1 in switch_list:
@@ -108,7 +124,7 @@ class SimpleSwitch(app_manager.RyuApp):
                     if(dist[sw2][sw1] + dist[sw1][sw3] < dist[sw2][sw3]):
                         dist[sw2][sw3] = dist[sw2][sw1] + dist[sw1][sw3] 
                         path[sw2][sw3] = path[sw2][sw1] + path[sw1][sw3][1:] 
-        self.path=path   
+        self.path=path
     def add_unicast_flow(self, datapath, dst, actions):
         ofproto = datapath.ofproto
 
@@ -240,6 +256,9 @@ class SimpleSwitch(app_manager.RyuApp):
         sw2=link.dst.dpid
         p1=link.src.port_no
         p2=link.dst.port_no
+        mac1=self.datapaths[sw1].ports[p1].hw_addr
+        mac2=self.datapaths[sw2].ports[p2].hw_addr
+        self.link_delays[(mac1,mac2)]=float('inf')
         self.send_for_link_delay(link)
         if (sw1,sw2) in self.links:
             self.links[(sw1,sw2)].append((p1,p2))
