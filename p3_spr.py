@@ -110,15 +110,17 @@ class SimpleSwitch13(app_manager.RyuApp):
         datapath.send_msg(mod)
     def add_broadcast_flow(self, datapath, dst_mac,actions):
         ofproto = datapath.ofproto
-
+        parser = datapath.ofproto_parser
         match = datapath.ofproto_parser.OFPMatch(
             eth_dst=dst_mac)
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
 
         mod = datapath.ofproto_parser.OFPFlowMod(
             datapath=datapath, match=match, cookie=0,
             command=ofproto.OFPFC_ADD, idle_timeout=300, hard_timeout=300,
             priority=ofproto.OFP_DEFAULT_PRIORITY,
-            flags=ofproto.OFPFF_SEND_FLOW_REM, action=actions)
+            flags=ofproto.OFPFF_SEND_FLOW_REM, instructions=inst)
+        
         datapath.send_msg(mod)
     def broadcast_handler(self,ev,dst_mac):
         msg = ev.msg
@@ -202,7 +204,7 @@ class SimpleSwitch13(app_manager.RyuApp):
             if msg.buffer_id == ofproto_v1_3.OFP_NO_BUFFER:
                 data = msg.data
             out = datapath.ofproto_parser.OFPPacketOut(
-            datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.in_port,
+            datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.match['in_port'],
                 actions=actions, data=data)
             datapath.send_msg(out)
     @set_ev_cls(topo_event.EventSwitchEnter, MAIN_DISPATCHER)
@@ -222,6 +224,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         mac1=self.datapaths[sw1].ports[p1].hw_addr
         mac2=self.datapaths[sw2].ports[p2].hw_addr
         self.link_delays[(mac1,mac2)]=float('inf')
+        self.send_for_link_delay(link)
         self.send_for_link_delay(link)
         if (sw1,sw2) in self.links:
             self.links[(sw1,sw2)].append((p1,p2))
