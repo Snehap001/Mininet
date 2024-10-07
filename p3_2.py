@@ -153,6 +153,8 @@ class SimpleSwitch13(app_manager.RyuApp):
         if(start_dpid==end_dpid):
             out_port=self.mac_to_switch_port[dst_mac][1]
         else:
+            # self.logger.info("Path: " )
+            # self.logger.info(self.path[start_dpid][end_dpid])
             next_hop=self.path[start_dpid][end_dpid][1]
             min_delay = float('inf')  # Start with an infinitely large delay
             min_del_link = None 
