@@ -2,7 +2,6 @@ from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import MAIN_DISPATCHER, set_ev_cls,CONFIG_DISPATCHER
 from ryu.ofproto import ofproto_v1_3
-from ryu.lib.mac import haddr_to_bin
 from ryu.lib.packet import packet, ethernet,lldp, ether_types,arp
 from ryu.topology import event as topo_event
 import time
@@ -13,7 +12,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         super(SimpleSwitch13, self).__init__(*args, **kwargs)
         self.logger = logging.getLogger('my_logger')
         self.logger.setLevel(logging.INFO)
-        logging.getLogger('ryu').setLevel(logging.WARNING)
         # Console handler
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
@@ -106,29 +104,32 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.path=path
     def add_unicast_flow(self, datapath, dst, actions):
         ofproto = datapath.ofproto
-
+        parser = datapath.ofproto_parser
         match = datapath.ofproto_parser.OFPMatch(
-            dl_dst=haddr_to_bin(dst))
-
-        mod = datapath.ofproto_parser.OFPFlowMod(
-            datapath=datapath, match=match, cookie=0,
-            command=ofproto.OFPFC_ADD, idle_timeout=300, hard_timeout=300,
-            priority=ofproto.OFP_DEFAULT_PRIORITY,
-            flags=ofproto.OFPFF_SEND_FLOW_REM, actions=actions)
+            eth_dst=dst)
+        instructions = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        mod = parser.OFPFlowMod(
+        datapath=datapath,
+        priority=ofproto.OFP_DEFAULT_PRIORITY,
+        match=match,
+        instructions=instructions,
+        idle_timeout=300,
+        hard_timeout=300
+        )
         datapath.send_msg(mod)
-    def add_broadcast_flow(self, datapath, actions):
+    def add_broadcast_flow(self, datapath, dst_mac,actions):
         ofproto = datapath.ofproto
 
         match = datapath.ofproto_parser.OFPMatch(
-            dl_dst=haddr_to_bin('ff:ff:ff:ff:ff:ff'))
+            eth_dst=dst_mac)
 
         mod = datapath.ofproto_parser.OFPFlowMod(
             datapath=datapath, match=match, cookie=0,
             command=ofproto.OFPFC_ADD, idle_timeout=300, hard_timeout=300,
             priority=ofproto.OFP_DEFAULT_PRIORITY,
-            flags=ofproto.OFPFF_SEND_FLOW_REM, actions=actions)
+            flags=ofproto.OFPFF_SEND_FLOW_REM, action=actions)
         datapath.send_msg(mod)
-    def broadcast_handler(self,ev):
+    def broadcast_handler(self,ev,dst_mac):
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
@@ -136,9 +137,9 @@ class SimpleSwitch13(app_manager.RyuApp):
         flood_action = [datapath.ofproto_parser.OFPActionOutput(datapath.ofproto.OFPP_FLOOD)]
         data = msg.data if msg.buffer_id == ofproto.OFP_NO_BUFFER else None
         out = datapath.ofproto_parser.OFPPacketOut(
-            datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.in_port,
+            datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.match['in_port'],
             actions=flood_action, data=data)
-        self.add_broadcast_flow(datapath,flood_action)
+        # self.add_broadcast_flow(datapath,dst_mac,flood_action)
         datapath.send_msg(out)
     def unicast_handler(self,ev):
         msg = ev.msg
@@ -153,14 +154,23 @@ class SimpleSwitch13(app_manager.RyuApp):
             out_port=self.mac_to_switch_port[dst_mac][1]
         else:
             next_hop=self.path[start_dpid][end_dpid][1]
-            min_del_link = min(self.links[start_dpid][next_hop], key=lambda link: self.link_delays[(self.datapaths[start_dpid].ports[link[0]].hw_addr,self.datapaths[next_hop].ports[link[1]].hw_addr)])
+            min_delay = float('inf')  # Start with an infinitely large delay
+            min_del_link = None 
+            for link in self.links[(start_dpid,next_hop)]:
+                # Get the MAC addresses for the ports on each end of the link
+                src_hw_addr = self.datapaths[start_dpid].ports[link[0]].hw_addr
+                dst_hw_addr = self.datapaths[next_hop].ports[link[1]].hw_addr
+                delay = self.link_delays[(src_hw_addr, dst_hw_addr)]
+                if delay < min_delay:
+                    min_delay = delay
+                    min_del_link = link 
             out_port=min_del_link[0]
         actions = [datapath.ofproto_parser.OFPActionOutput(out_port)]
         data = None
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
             data = msg.data
         out = datapath.ofproto_parser.OFPPacketOut(
-            datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.in_port,
+            datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.match['in_port'],
             actions=actions, data=data)
         self.add_unicast_flow(datapath, dst_mac, actions)
         datapath.send_msg(out)
@@ -197,15 +207,19 @@ class SimpleSwitch13(app_manager.RyuApp):
             return 
         if(src_mac not in self.mac_to_switch_port):
             self.mac_to_switch_port[src_mac]=(datapath.id,in_port)
-        if (dst_mac.startswith("33:33") or dst_mac.startswith("01:00:5e")):
-            self.broadcast_handler(ev)
-        elif (dst_mac=='ff:ff:ff:ff:ff:ff'):
-            self.broadcast_handler(ev)
+        if (dst_mac.startswith("33:33") or dst_mac.startswith("01:00:5e") or (dst_mac=='ff:ff:ff:ff:ff:ff')):
+            self.broadcast_handler(ev,dst_mac)
+        elif(dst_mac in self.mac_to_switch_port):
+            self.unicast_handler(ev)
         else:
-            if(dst_mac in self.mac_to_switch_port):
-                self.unicast_handler(ev)
-            else:
-                self.broadcast_handler(ev) 
+            actions = [datapath.ofproto_parser.OFPActionOutput(ofproto_v1_3.OFPP_FLOOD)]
+            data = None
+            if msg.buffer_id == ofproto_v1_3.OFP_NO_BUFFER:
+                data = msg.data
+            out = datapath.ofproto_parser.OFPPacketOut(
+            datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.in_port,
+                actions=actions, data=data)
+            datapath.send_msg(out)
     @set_ev_cls(topo_event.EventSwitchEnter, MAIN_DISPATCHER)
     def switch_enter_handler(self, ev):
         # Get the datapath object
@@ -213,24 +227,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         # Get the DPID (Datapath ID)
         dpid = datapath.id
         self.datapaths[dpid]=datapath
-    def handle_arp(self, datapath, in_port, pkt):
-        arp_pkt = pkt.get_protocol(arp.arp)
-        
-        if arp_pkt.opcode == arp.ARP_REQUEST:
-            self.logger.info(f"Received ARP Request from {arp_pkt.src_ip} for {arp_pkt.dst_ip}")
-            
-            # Check if we know the destination IP (i.e., the MAC address of the destination)
-            if arp_pkt.dst_ip in self.hostmac_to_switch_port:
-                self.send_arp_reply(datapath, in_port, arp_pkt)
-            else:
-                # Flood the ARP request if we don't know the destination
-                self.flood_arp_request(datapath, in_port, pkt)
-        
-        elif arp_pkt.opcode == arp.ARP_REPLY:
-            self.logger.info(f"Received ARP Reply from {arp_pkt.src_ip} with MAC {arp_pkt.src_mac}")
-            # Process ARP replies and update internal mappings
-            self.hostmac_to_switch_port[arp_pkt.src_ip] = (datapath.id, in_port)
-            self.forward_arp_reply(datapath, in_port, pkt)
     @set_ev_cls(topo_event.EventLinkAdd, MAIN_DISPATCHER)
     def add_link(self,ev):
         link=ev.link
@@ -249,3 +245,26 @@ class SimpleSwitch13(app_manager.RyuApp):
         else:
             self.links[(sw1,sw2)]=[(p1,p2)]
         return
+    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    def switch_features_handler(self, ev):
+        datapath = ev.msg.datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        match = parser.OFPMatch()
+        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+                                          ofproto.OFPCML_NO_BUFFER)]
+        self.add_flow(datapath, 0, match, actions)
+    def add_flow(self, datapath, priority, match, actions, buffer_id=None):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
+                                             actions)]
+        if buffer_id:
+            mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id,
+                                    priority=priority, match=match,
+                                    instructions=inst)
+        else:
+            mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
+                                    match=match, instructions=inst)
+        datapath.send_msg(mod)
