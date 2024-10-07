@@ -35,6 +35,7 @@ class SimpleSwitch(app_manager.RyuApp):
             if (src.dpid,dst.dpid) not in links and  (dst.dpid,src.dpid) not in links:
                 links[(src.dpid,dst.dpid)]=(src.port_no,dst.port_no)
         host_list = get_host(self, None)
+        
         host_links = {}
         for host in host_list:
             # Each host object has port information about the switch it is connected to
@@ -176,7 +177,8 @@ class SimpleSwitch(app_manager.RyuApp):
         if len(self.spanning_tree_ports)==0:
             
             return
-        
+        # self.logger.info(f"spanning tree is : {self.spanning_tree_ports}")
+        # self.logger.info(f"links: {self.links}")
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
@@ -191,9 +193,9 @@ class SimpleSwitch(app_manager.RyuApp):
         dpid = datapath.id
         self.mac_to_port.setdefault(dpid, {})
         self.mac_to_port[dpid][src] = msg.in_port
-        self.logger.info(f"packet from {src} to {dst} at {dpid}")
+        # self.logger.info(f"packet from {src} to {dst} at {dpid}")
         
-        if dst=='ff:ff:ff:ff:ff:ff' or dst=='33:33:00:00:00:02':
+        if dst=='ff:ff:ff:ff:ff:ff' :
             self.broadcast_packet_handler(ev)
             return
 
