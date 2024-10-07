@@ -7,10 +7,10 @@ from ryu.lib.packet import packet, ethernet,lldp, ether_types,arp
 from ryu.topology import event as topo_event
 import time
 import logging
-class SimpleSwitch(app_manager.RyuApp):
+class SimpleSwitch13(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
     def __init__(self, *args, **kwargs):
-        super(SimpleSwitch, self).__init__(*args, **kwargs)
+        super(SimpleSwitch13, self).__init__(*args, **kwargs)
         self.logger = logging.getLogger('my_logger')
         self.logger.setLevel(logging.INFO)
         logging.getLogger('ryu').setLevel(logging.WARNING)
@@ -129,33 +129,16 @@ class SimpleSwitch(app_manager.RyuApp):
             flags=ofproto.OFPFF_SEND_FLOW_REM, actions=actions)
         datapath.send_msg(mod)
     def broadcast_handler(self,ev):
-        return
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
         pkt = packet.Packet(msg.data)
-        eth = pkt.get_protocol(ethernet.ethernet)
-        src = eth.src
-        dpid = datapath.id
-        in_port=msg.in_port
-
-        actions=[]
-        selected_ports=set()
-        for (dpid_,port) in self.port_to_mac:
-            if((dpid==dpid_) and (port!=in_port)):
-                selected_ports.add(port)
-        for (host,switch) in self.host_to_switch:
-            if(switch==dpid):
-                port=self.mac_to_switch_port[host]
-                if ((host!=src) and (port!=in_port)):
-                    selected_ports.add(port)
-        for port in selected_ports:
-            actions.append(datapath.ofproto_parser.OFPActionOutput(port))
+        flood_action = [datapath.ofproto_parser.OFPActionOutput(datapath.ofproto.OFPP_FLOOD)]
         data = msg.data if msg.buffer_id == ofproto.OFP_NO_BUFFER else None
         out = datapath.ofproto_parser.OFPPacketOut(
             datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.in_port,
-            actions=actions, data=data)
-        self.add_broadcast_flow(datapath,actions)
+            actions=flood_action, data=data)
+        self.add_broadcast_flow(datapath,flood_action)
         datapath.send_msg(out)
     def unicast_handler(self,ev):
         msg = ev.msg
@@ -191,7 +174,6 @@ class SimpleSwitch(app_manager.RyuApp):
         src_mac=eth.src
         dst_mac=eth.dst
         in_port = msg.match['in_port']
-        arp_pkt = pkt.get_protocol(arp.arp)
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             lldp_pkt = pkt.get_protocol(lldp.lldp)
             for tlv in lldp_pkt.tlvs:
@@ -200,30 +182,36 @@ class SimpleSwitch(app_manager.RyuApp):
                     if  descr.startswith('SDN'):
                         src_mac=eth.src
                         dst_mac = datapath.ports[in_port].hw_addr
-                        _, send_time = descr.split(" - ")
+                        _, send_time = descr.split("-")
+                        send_time=float(send_time)
                         link_delay = (recv_time-send_time)*1000
                         self.lldp_pkt_count[(src_mac,dst_mac)]+=1
                         count=self.lldp_pkt_count[(src_mac,dst_mac)]
-                        link_delay=(self.link_delays[(src_mac,dst_mac)]*(count-1)+link_delay)/count
+                        prev_delay=self.link_delays[(src_mac,dst_mac)]
+                        if(prev_delay!=float('inf')):
+                            link_delay=(prev_delay*(count-1)+link_delay)/count
                         self.link_delays[(src_mac,dst_mac)]=link_delay
-                        self.logger.info("Source mac : "+str(src_mac)+ " Destination mac : "+str(dst_mac)+" "+str(link_delay))
+                        if(count==5):
+                            self.logger.info("Source mac : "+str(src_mac)+ " Destination mac : "+str(dst_mac)+" "+str(link_delay))
                         self.run_floyd_warshall()
             return 
-        if dst_mac.startswith("33:33"):
-            self.broadcast_handler(ev)
-        elif dst_mac.startswith("01:00:5e"):
+        if(src_mac not in self.mac_to_switch_port):
+            self.mac_to_switch_port[src_mac]=(datapath.id,in_port)
+        if (dst_mac.startswith("33:33") or dst_mac.startswith("01:00:5e")):
             self.broadcast_handler(ev)
         elif (dst_mac=='ff:ff:ff:ff:ff:ff'):
             self.broadcast_handler(ev)
         else:
-            self.unicast_handler(ev)
+            if(dst_mac in self.mac_to_switch_port):
+                self.unicast_handler(ev)
+            else:
+                self.broadcast_handler(ev) 
     @set_ev_cls(topo_event.EventSwitchEnter, MAIN_DISPATCHER)
     def switch_enter_handler(self, ev):
         # Get the datapath object
         datapath = ev.switch.dp
         # Get the DPID (Datapath ID)
         dpid = datapath.id
-        self.logger.info("Added switch")
         self.datapaths[dpid]=datapath
     def handle_arp(self, datapath, in_port, pkt):
         arp_pkt = pkt.get_protocol(arp.arp)
@@ -243,12 +231,6 @@ class SimpleSwitch(app_manager.RyuApp):
             # Process ARP replies and update internal mappings
             self.hostmac_to_switch_port[arp_pkt.src_ip] = (datapath.id, in_port)
             self.forward_arp_reply(datapath, in_port, pkt)
-    @set_ev_cls(topo_event.EventHostAdd, CONFIG_DISPATCHER)
-    def host_add_handler(self, ev):
-        self.logger.info("Host added")
-        host = ev.host  # Get the host object from the event
-        self.logger.info(host.mac)
-        self.mac_to_switch_port[host.mac]=(host.port.dpid,host.port.port_no)
     @set_ev_cls(topo_event.EventLinkAdd, MAIN_DISPATCHER)
     def add_link(self,ev):
         link=ev.link
