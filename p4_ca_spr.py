@@ -110,15 +110,17 @@ class SimpleSwitch13(app_manager.RyuApp):
         datapath.send_msg(mod)
     def add_broadcast_flow(self, datapath, dst_mac,actions):
         ofproto = datapath.ofproto
-
+        parser = datapath.ofproto_parser
         match = datapath.ofproto_parser.OFPMatch(
             eth_dst=dst_mac)
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
 
         mod = datapath.ofproto_parser.OFPFlowMod(
             datapath=datapath, match=match, cookie=0,
             command=ofproto.OFPFC_ADD, idle_timeout=300, hard_timeout=300,
             priority=ofproto.OFP_DEFAULT_PRIORITY,
-            flags=ofproto.OFPFF_SEND_FLOW_REM, action=actions)
+            flags=ofproto.OFPFF_SEND_FLOW_REM, instructions=inst)
+        
         datapath.send_msg(mod)
     def broadcast_handler(self,ev,dst_mac):
         msg = ev.msg
@@ -223,6 +225,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         mac2=self.datapaths[sw2].ports[p2].hw_addr
         self.link_delays[(mac1,mac2)]=float('inf')
         self.send_for_link_delay(sw1,p1)
+        self.send_for_link_delay(sw1,p1)
         if (sw1,sw2) in self.links:
             self.links[(sw1,sw2)].append((p1,p2))
         else:
@@ -256,4 +259,4 @@ class SimpleSwitch13(app_manager.RyuApp):
             for (sw1,sw2) in self.links:
                 for (p1,p2) in self.links[(sw1,sw2)]:
                         self.send_for_link_delay(sw1,p1)                
-                        hub.sleep(2)
+            hub.sleep(120)
