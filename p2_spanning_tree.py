@@ -176,8 +176,7 @@ class SimpleSwitch(app_manager.RyuApp):
         if len(self.spanning_tree_ports)==0:
             
             return
-        self.logger.info(f"spanning tree is : {self.spanning_tree_ports}")
-        self.logger.info(f"links: {self.links}")
+        
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
