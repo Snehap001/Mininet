@@ -256,4 +256,4 @@ class SimpleSwitch13(app_manager.RyuApp):
             for (sw1,sw2) in self.links:
                 for (p1,p2) in self.links[(sw1,sw2)]:
                         self.send_for_link_delay(sw1,p1)                
-            hub.sleep(120)
+                        hub.sleep(2)

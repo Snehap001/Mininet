@@ -2,7 +2,7 @@ from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import MAIN_DISPATCHER, set_ev_cls,CONFIG_DISPATCHER
 from ryu.ofproto import ofproto_v1_3
-from ryu.lib.packet import packet, ethernet,lldp, ether_types,arp
+from ryu.lib.packet import packet, ethernet,lldp, ether_types
 from ryu.topology import event as topo_event
 import time
 import logging
@@ -12,14 +12,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         super(SimpleSwitch13, self).__init__(*args, **kwargs)
         self.logger = logging.getLogger('my_logger')
         self.logger.setLevel(logging.INFO)
-        # Console handler
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        console_handler.setFormatter(formatter)
-
-        # Add handler to logger
-        self.logger.addHandler(console_handler)
         self.links={}
 
         # stores link delay for every (mac1,mac2) link
@@ -30,7 +22,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         #stores (switch_dpid,port) to mac address mapping
         self.mac_to_switch_port={}
         self.path={}
-        self.lldp_pkt_count={}
         
     def build_lldp_packet(self, src_dpid,src_port,src_mac):
         # Create Ethernet frame
@@ -139,7 +130,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         out = datapath.ofproto_parser.OFPPacketOut(
             datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.match['in_port'],
             actions=flood_action, data=data)
-        # self.add_broadcast_flow(datapath,dst_mac,flood_action)
+        self.add_broadcast_flow(datapath,dst_mac,flood_action)
         datapath.send_msg(out)
     def unicast_handler(self,ev):
         msg = ev.msg
@@ -153,8 +144,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         if(start_dpid==end_dpid):
             out_port=self.mac_to_switch_port[dst_mac][1]
         else:
-            # self.logger.info("Path: " )
-            # self.logger.info(self.path[start_dpid][end_dpid])
             next_hop=self.path[start_dpid][end_dpid][1]
             min_delay = float('inf')  # Start with an infinitely large delay
             min_del_link = None 
@@ -197,14 +186,8 @@ class SimpleSwitch13(app_manager.RyuApp):
                         _, send_time = descr.split("-")
                         send_time=float(send_time)
                         link_delay = (recv_time-send_time)*1000
-                        self.lldp_pkt_count[(src_mac,dst_mac)]+=1
-                        count=self.lldp_pkt_count[(src_mac,dst_mac)]
-                        prev_delay=self.link_delays[(src_mac,dst_mac)]
-                        if(prev_delay!=float('inf')):
-                            link_delay=(prev_delay*(count-1)+link_delay)/count
                         self.link_delays[(src_mac,dst_mac)]=link_delay
-                        if(count==5):
-                            self.logger.info("Source mac : "+str(src_mac)+ " Destination mac : "+str(dst_mac)+" "+str(link_delay))
+                        self.logger.info("Source mac : "+str(src_mac)+ " Destination mac : "+str(dst_mac)+" "+str(link_delay))
                         self.run_floyd_warshall()
             return 
         if(src_mac not in self.mac_to_switch_port):
@@ -239,9 +222,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         mac1=self.datapaths[sw1].ports[p1].hw_addr
         mac2=self.datapaths[sw2].ports[p2].hw_addr
         self.link_delays[(mac1,mac2)]=float('inf')
-        self.lldp_pkt_count[(mac1,mac2)]=0
-        for _ in range(5):
-            self.send_for_link_delay(link)
+        self.send_for_link_delay(link)
         if (sw1,sw2) in self.links:
             self.links[(sw1,sw2)].append((p1,p2))
         else:
